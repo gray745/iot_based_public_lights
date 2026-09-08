@@ -1,0 +1,320 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>iot based public light fault detection and reporting system</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    *{box-sizing:border-box;font-family:Arial,Helvetica,sans-serif}
+    body{margin:0;background:#f7f9fb;color:#222;display:flex;flex-direction:column;min-height:100vh}
+    header{
+      background:#0b76ef;
+      color:#fff;
+      padding:12px 20px;
+      display:flex;
+      justify-content:space-between;
+      align-items:center;
+    }
+    header h1{margin:0;font-size:1.3rem}
+    .logout-btn{
+      background:#fff;
+      color:#0b76ef;
+      border:none;
+      padding:6px 12px;
+      border-radius:5px;
+      font-weight:bold;
+      cursor:pointer;
+      transition:0.3s;
+    }
+    .logout-btn:hover{background:#e6e6e6}
+    main{flex:1;padding:20px;max-width:1100px;margin:0 auto}
+    .cards{display:flex;gap:12px;margin-bottom:20px;flex-wrap:wrap}
+    .card{background:#fff;padding:16px;border-radius:8px;box-shadow:0 4px 10px rgba(0,0,0,0.06);flex:1;min-width:160px;text-align:center}
+    .card h3{margin:0;font-size:1.6rem}
+    .table-section, .chart-section, .alerts-section{background:#fff;padding:16px;border-radius:8px;box-shadow:0 4px 10px rgba(0,0,0,0.04);margin-bottom:20px}
+    table{width:100%;border-collapse:collapse}
+    table th, table td{padding:8px;border-bottom:1px solid #eee;text-align:left}
+    .status-ON{color:green;font-weight:600}
+    .status-OFF{color:#bb8800;font-weight:600}
+    .status-FAILED{color:red;font-weight:700}
+    .status-OVERCURRENT{color:#fff;background:red;font-weight:700;padding:2px 6px;border-radius:4px;animation:blink 0.8s step-start infinite}
+    @keyframes blink{50%{background:#800000}}
+    footer{padding:10px;text-align:center;background:#fff}
+    #alertsList{max-height:160px;overflow:auto}
+    @media(max-width:700px){.cards{flex-direction:column}}
+    .ctrl-btn{
+      padding:4px 10px;border:none;border-radius:4px;
+      cursor:pointer;font-size:0.82rem;font-weight:bold;margin:0 2px;
+    }
+    .btn-on {background:#28a745;color:#fff}
+    .btn-on:hover{background:#1e7e34}
+    .btn-off{background:#dc3545;color:#fff}
+    .btn-off:hover{background:#b02a37}
+    .btn-on:disabled,.btn-off:disabled{opacity:0.5;cursor:not-allowed}
+    .ctrl-msg{font-size:0.78rem;color:#555;margin-left:6px}
+    .dim-group{display:inline-flex;gap:3px;margin-left:6px;vertical-align:middle}
+    .btn-dim{padding:3px 8px;border:none;border-radius:4px;cursor:pointer;font-size:0.78rem;font-weight:bold;transition:0.2s}
+    .btn-dim-low   {background:#f0c040;color:#333}
+    .btn-dim-low:hover   {background:#d4a800}
+    .btn-dim-medium{background:#fd8c00;color:#fff}
+    .btn-dim-medium:hover{background:#c46e00}
+    .btn-dim-high  {background:#0b76ef;color:#fff}
+    .btn-dim-high:hover  {background:#0056b3}
+    .btn-dim:disabled{opacity:0.5;cursor:not-allowed}
+  </style>
+</head>
+<body>
+  <header>
+    <h1>iot based public light fault detection and reporting system</h1>
+    <button class="logout-btn" onclick="logout()">Logout</button>
+  </header>
+
+  <main>
+    <section class="cards">
+      <div class="card"><h3 id="total">--</h3><p>Total Lights</p></div>
+      <div class="card"><h3 id="onCount">--</h3><p>Lights ON</p></div>
+      <div class="card"><h3 id="offCount">--</h3><p>Lights OFF</p></div>
+      <div class="card"><h3 id="failedCount">--</h3><p>Failures</p></div>
+    </section>
+
+    <section class="table-section">
+      <h2>Live Devices</h2>
+      <table id="devicesTable">
+        <thead>
+          <tr><th>Device ID</th><th>Current (A)</th><th>Brightness</th><th>Status</th><th>Last Seen</th><th>Control</th></tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </section>
+
+    <section class="chart-section">
+      <h2>Device History (select device)</h2>
+      <select id="deviceSelect"><option value="">-- Select device --</option></select>
+      <canvas id="historyChart" width="800" height="300"></canvas>
+    </section>
+
+    <section class="alerts-section">
+      <h2>Recent Alerts</h2>
+      <div id="alertsList">Loading...</div>
+    </section>
+  </main>
+
+  <footer>
+    <small>© 2026 iot based public light fault detection and reporting system</small>
+  </footer>
+
+  <script>
+    let devices = [];
+    let chart;
+
+    function logout() {
+      if (confirm("Are you sure you want to logout?")) {
+        window.location.href = "logout.php";
+      }
+    }
+
+    function updateCounters() {
+      document.getElementById("total").textContent = devices.length;
+      document.getElementById("onCount").textContent = devices.filter(d=>d.status==="ON").length;
+      document.getElementById("offCount").textContent = devices.filter(d=>d.status==="OFF").length;
+      document.getElementById("failedCount").textContent = devices.filter(d=>d.status==="FAILED"||d.status==="FAIL"||d.status==="OVERCURRENT").length;
+    }
+
+    // Send dim level to a device
+    async function sendDim(device_id, dim_level, btn) {
+      const row = btn.closest('tr');
+      row.querySelectorAll('.btn-dim,.ctrl-btn').forEach(b => b.disabled = true);
+      const msgSpan = row.querySelector('.ctrl-msg');
+      msgSpan.style.color = '#555';
+      msgSpan.textContent = 'Setting...';
+      try {
+        const res  = await fetch('set_dim.php', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+          body: `device_id=${encodeURIComponent(device_id)}&dim_level=${dim_level}`
+        });
+        const data = await res.json();
+        if (data.status === 'ok') {
+          const labels = {DIM_LOW:'Low 25%', DIM_MEDIUM:'Medium 50%', DIM_HIGH:'High 100%'};
+          msgSpan.textContent = `✓ ${labels[dim_level]} set`;
+          msgSpan.style.color = '#1a7f37';
+        } else {
+          msgSpan.textContent = '✗ ' + (data.message || 'Error');
+          msgSpan.style.color = 'red';
+        }
+      } catch(err) {
+        msgSpan.textContent = '✗ Network error';
+        msgSpan.style.color = 'red';
+      }
+      setTimeout(() => {
+        row.querySelectorAll('.btn-dim,.ctrl-btn').forEach(b => b.disabled = false);
+        msgSpan.textContent = '';
+      }, 3000);
+    }
+
+    // Send ON or OFF command to a device
+    async function sendCommand(device_id, command, btn) {
+      const row = btn.closest('tr');
+      row.querySelectorAll('.ctrl-btn').forEach(b => b.disabled = true);
+      const msgSpan = row.querySelector('.ctrl-msg');
+      msgSpan.style.color = '#555';
+      msgSpan.textContent = 'Sending...';
+
+      // Try up to 2 times in case of a brief network blip
+      let data = null;
+      for (let attempt = 1; attempt <= 2; attempt++) {
+        try {
+          const res = await fetch('control_light.php', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+            body: `device_id=${encodeURIComponent(device_id)}&command=${command}`
+          });
+          data = await res.json();
+          break; // success — stop retrying
+        } catch(err) {
+          if (attempt === 2) {
+            // Both attempts failed — but command may still have saved.
+            // Check alerts to confirm.
+            msgSpan.textContent = '⚠️ Network unstable. Check Recent Alerts to confirm.';
+            msgSpan.style.color = '#bb8800';
+            setTimeout(() => {
+              row.querySelectorAll('.ctrl-btn').forEach(b => b.disabled = false);
+              msgSpan.textContent = '';
+            }, 5000);
+            return;
+          }
+          await new Promise(r => setTimeout(r, 1000)); // wait 1s before retry
+        }
+      }
+
+      if (data && data.status === 'ok') {
+        let feedback = `✓ ${command} sent`;
+        if (data.email_sent)        feedback += ' | 📧 Email sent';
+        else if (data.email_error)  feedback += ' | ⚠️ Email failed';
+        if (data.sms_sent)          feedback += ' | 📱 SMS sent';
+        else if (data.sms_error)    feedback += ' | ⚠️ SMS failed';
+        msgSpan.textContent = feedback;
+        msgSpan.style.color = '#1a7f37';
+      } else {
+        msgSpan.textContent = '✗ ' + (data?.message || 'Error');
+        msgSpan.style.color = 'red';
+      }
+
+      setTimeout(() => {
+        row.querySelectorAll('.ctrl-btn').forEach(b => b.disabled = false);
+        msgSpan.textContent = '';
+      }, 4000);
+    }
+
+    function loadTable() {
+      const tbody = document.querySelector("#devicesTable tbody");
+      tbody.innerHTML = "";
+      devices.forEach(dev => {
+        const tr = document.createElement("tr");
+        tr.innerHTML = `
+          <td>${dev.device_id}</td>
+          <td>${dev.current.toFixed(2)}</td>
+          <td>${dev.brightness}</td>
+          <td class="status-${dev.status}">${dev.status}</td>
+          <td>${dev.timestamp}</td>
+          <td>
+            <button class="ctrl-btn btn-on"
+              onclick="sendCommand('${dev.device_id}','ON',this)">ON</button>
+            <button class="ctrl-btn btn-off"
+              onclick="sendCommand('${dev.device_id}','OFF',this)">OFF</button>
+            <span class="dim-group">
+              <button class="btn-dim btn-dim-low"
+                onclick="sendDim('${dev.device_id}','DIM_LOW',this)" title="Low brightness 25%">🌑 Low</button>
+              <button class="btn-dim btn-dim-medium"
+                onclick="sendDim('${dev.device_id}','DIM_MEDIUM',this)" title="Medium brightness 50%">🌗 Med</button>
+              <button class="btn-dim btn-dim-high"
+                onclick="sendDim('${dev.device_id}','DIM_HIGH',this)" title="Full brightness 100%">🌕 High</button>
+            </span>
+            <span class="ctrl-msg"></span>
+          </td>
+        `;
+        tbody.appendChild(tr);
+      });
+    }
+
+    function loadAlerts() {
+      fetch('get_alerts.php')
+        .then(r => r.json())
+        .then(json => {
+          const div = document.getElementById("alertsList");
+          if (!json.data || json.data.length === 0) {
+            div.innerHTML = "<p>No alerts</p>";
+            return;
+          }
+          div.innerHTML = json.data.map(a => {
+            const icon = a.alert_type.includes('OVERCURRENT') ? '🔥' :
+                         a.alert_type.includes('FAILURE')     ? '🔴' :
+                         a.alert_type.includes('ON')          ? '🟢' : '🟡';
+            return `<p>${icon} <b>${a.device_id}</b> — ${a.alert_type} — ${a.message} <small>(${a.sent_at})</small></p>`;
+          }).join('');
+        })
+        .catch(() => {
+          document.getElementById("alertsList").innerHTML = "<p>Error loading alerts</p>";
+        });
+    }
+
+    function loadDeviceSelect() {
+      const sel = document.getElementById("deviceSelect");
+      const prev = sel.value;
+      sel.innerHTML = '<option value="">-- Select device --</option>';
+      devices.forEach(d => {
+        const opt = document.createElement("option");
+        opt.value = d.device_id;
+        opt.textContent = d.device_id;
+        if (d.device_id === prev) opt.selected = true;
+        sel.appendChild(opt);
+      });
+      sel.onchange = () => { if (sel.value) loadChart(sel.value); };
+    }
+
+    function loadChart(deviceId) {
+      const ctx = document.getElementById("historyChart").getContext("2d");
+      const labels = ["07:00","07:15","07:30","07:45","08:00","08:15"];
+      const data   = labels.map(() => Math.floor(Math.random() * 100));
+      if (chart) chart.destroy();
+      chart = new Chart(ctx, {
+        type: "line",
+        data: {
+          labels,
+          datasets: [{
+            label: deviceId + " Brightness History",
+            data,
+            fill: false,
+            borderColor: "#0b76ef"
+          }]
+        }
+      });
+    }
+
+    async function fetchDevices() {
+      try {
+        const res  = await fetch('fetchdata.php');
+        const data = await res.json();
+        devices = data.map(d => ({
+          device_id: d.device_id,
+          current:   parseFloat(d.current),
+          brightness:parseInt(d.brightness),
+          status:    d.status,
+          timestamp: d.timestamp
+        }));
+        loadTable();
+        updateCounters();
+        loadAlerts();
+        loadDeviceSelect();
+      } catch(err) {
+        console.error("Error fetching devices:", err);
+        document.getElementById("alertsList").innerHTML = "<p>Error loading devices</p>";
+      }
+    }
+
+    fetchDevices();
+    setInterval(fetchDevices, 3000);
+  </script>
+</body>
+</html>
